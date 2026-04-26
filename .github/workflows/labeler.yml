@@ -6,4 +6,7 @@ on:
 
 jobs:
   label:
+    permissions:
+      contents: read
+      pull-requests: write
     uses: samprodger/repo-template/.github/workflows/labeler.yml@main
