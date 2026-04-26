@@ -3,43 +3,7 @@ name: Lint
 on:
   pull_request:
 
-permissions:
-  contents: read
-
 jobs:
   lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # @v6
-
-      - name: YAML lint
-        uses: ibiqlik/action-yamllint@2576378a8e339169678f9939646ee3ee325e845c # @v3
-        with:
-          file_or_dir: .
-          config_data: |
-            extends: default
-            rules:
-              line-length:
-                max: 200
-                level: warning
-              document-start: disable
-              truthy:
-                check-keys: false
-              comments:
-                min-spaces-from-content: 1
-              indentation:
-                spaces: 2
-                indent-sequences: consistent
-              braces:
-                max-spaces-inside: 1
-              brackets:
-                max-spaces-inside: 1
-
-      - name: Shell lint (shellcheck)
-        run: |
-          sudo apt-get install -y shellcheck -q
-          find . -name "*.sh" \
-               -not -path "./.git/*" \
-               -not -path "*/node_modules/*" \
-               -print0 \
-          | xargs -0 --no-run-if-empty shellcheck
+    uses: samprodger/repo-template/.github/workflows/lint.yml@main
+    secrets: inherit
