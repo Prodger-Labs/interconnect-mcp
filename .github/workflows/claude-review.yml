@@ -6,6 +6,9 @@ on:
 
 jobs:
   review:
+    permissions:
+      contents: read
+      pull-requests: write
     uses: samprodger/repo-template/.github/workflows/claude-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
