@@ -6,4 +6,3 @@ on:
 jobs:
   lint:
     uses: samprodger/repo-template/.github/workflows/lint.yml@main
-    secrets: inherit
