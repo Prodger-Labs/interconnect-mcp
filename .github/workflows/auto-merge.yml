@@ -47,7 +47,7 @@ jobs:
                 ref: headSha,
               });
 
-              const others = check_runs.filter(c => c.name !== 'auto-merge-self');
+              const others = check_runs.filter(c => !c.name.includes('auto-merge-self'));
               const incomplete = others.filter(c => c.status !== 'completed');
 
               if (incomplete.length === 0) {
