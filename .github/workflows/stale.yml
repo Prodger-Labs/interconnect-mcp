@@ -8,4 +8,3 @@ on:
 jobs:
   stale:
     uses: samprodger/repo-template/.github/workflows/stale.yml@main
-    secrets: inherit
