@@ -1,11 +1,33 @@
 version: 2
+
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+      day: sunday
+      time: '09:00'
+      timezone: Europe/London
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        patterns: ['*']
+        update-types: [minor, patch]
+    labels:
+      - dependencies
+      - area:server
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: sunday
+      time: '09:00'
+      timezone: Europe/London
+    groups:
+      actions:
+        patterns: ['*']
+    labels:
+      - dependencies
+      - area:ci
