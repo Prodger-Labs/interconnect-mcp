@@ -1,19 +1,19 @@
 area:server:
   - changed-files:
-    - any-glob-to-any-file: ['server.js', 'src/**']
+      - any-glob-to-any-file: ["server.js", "src/**"]
 
 area:config:
   - changed-files:
-    - any-glob-to-any-file: ['*.json', '*.toml', 'fly.toml']
+      - any-glob-to-any-file: ["*.json", "*.toml", "fly.toml"]
 
 area:docker:
   - changed-files:
-    - any-glob-to-any-file: ['Dockerfile', '.dockerignore']
+      - any-glob-to-any-file: ["Dockerfile", ".dockerignore"]
 
 area:ci:
   - changed-files:
-    - any-glob-to-any-file: ['.github/**']
+      - any-glob-to-any-file: [".github/**"]
 
 sensitive:config:
   - changed-files:
-    - any-glob-to-any-file: ['.env*', '*.env', 'fly.toml']
+      - any-glob-to-any-file: [".env*", "*.env", "fly.toml"]
