@@ -4,16 +4,7 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
   label:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # @v6
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          configuration-path: .github/labeler.yml
-          sync-labels: true
+    uses: samprodger/repo-template/.github/workflows/labeler.yml@main
+    secrets: inherit
