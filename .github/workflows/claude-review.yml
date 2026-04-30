@@ -6,9 +6,16 @@ on:
 
 jobs:
   review:
+    # Permissions required by samprodger/repo-template's auto-merge step:
+    #   contents: write   — for pulls.merge fallback if enableAutoMerge fails
+    #   pull-requests: write — to post the review comment + enable auto-merge
+    #   checks: read      — to poll required-check status during the wait loop
+    # workflow_call permissions are intersected with the caller's grant, so
+    # the called workflow can only have what we grant here.
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
+      checks: read
     uses: samprodger/repo-template/.github/workflows/claude-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
