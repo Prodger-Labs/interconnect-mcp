@@ -2,7 +2,58 @@ name: Lint
 
 on:
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   lint:
-    uses: samprodger/repo-template/.github/workflows/lint.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # @v6
+
+      - name: YAML lint
+        uses: ibiqlik/action-yamllint@2576378a8e339169678f9939646ee3ee325e845c # @v3
+        with:
+          file_or_dir: .
+          config_data: |
+            extends: default
+            rules:
+              line-length:
+                max: 200
+                level: warning
+              document-start: disable
+              truthy:
+                check-keys: false
+              comments:
+                min-spaces-from-content: 1
+              indentation:
+                spaces: 2
+                indent-sequences: consistent
+              braces:
+                max-spaces-inside: 1
+              brackets:
+                max-spaces-inside: 1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # @v5
+        with:
+          python-version: '3.12'
+
+      - name: Python lint (ruff)
+        run: |
+          pip install ruff
+          ruff check . \
+            --select E,F \
+            --ignore E501,E402,E701,E741,F841 \
+            --exclude ".venv,node_modules,__pycache__,.git"
+
+      - name: Shell lint (shellcheck)
+        run: |
+          sudo apt-get install -y shellcheck -q
+          find . -name "*.sh" \
+               -not -path "./.git/*" \
+               -not -path "./.venv/*" \
+               -not -path "*/node_modules/*" \
+               -print0 \
+          | xargs -0 --no-run-if-empty shellcheck

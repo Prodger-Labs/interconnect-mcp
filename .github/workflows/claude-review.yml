@@ -3,12 +3,267 @@ name: Claude PR review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read         # required for the auto-merge step's checks.listForRef call
 
 jobs:
   review:
-    permissions:
-      contents: read
-      pull-requests: write
-    uses: samprodger/repo-template/.github/workflows/claude-review.yml@main
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Auto-approve Dependabot PRs
+        if: github.actor == 'dependabot[bot]'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # @v9
+        with:
+          script: |
+            // createReview(APPROVE) returns 422 on personal repos (self-review block).
+            // Swallow it — enablePullRequestAutoMerge below is the actual merge path.
+            try {
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                event: 'APPROVE',
+                body: '🤖 **Dependabot update — auto-approved.** Merge when CI passes.',
+              });
+            } catch (e) {
+              core.warning(`createReview skipped (${e.status ?? '?'}): ${e.message}`);
+            }
+
+            const pr_node_id = context.payload.pull_request.node_id;
+            try {
+              await github.graphql(`
+                mutation EnableAutoMerge($pullRequestId: ID!) {
+                  enablePullRequestAutoMerge(input: {
+                    pullRequestId: $pullRequestId,
+                    mergeMethod: MERGE
+                  }) {
+                    clientMutationId
+                  }
+                }
+              `, { pullRequestId: pr_node_id });
+              core.info(`Auto-merge enabled on PR #${context.issue.number}.`);
+            } catch (e) {
+              core.warning(`enablePullRequestAutoMerge failed: ${e.message}. PR will need manual merge.`);
+            }
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # @v6
+        if: github.actor != 'dependabot[bot]'
+        with:
+          fetch-depth: 0
+
+      - name: Check ANTHROPIC_API_KEY configured
+        if: github.actor != 'dependabot[bot]'
+        id: secret_check
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "::notice::ANTHROPIC_API_KEY not configured; skipping Claude review."
+          fi
+
+      - name: Compute diff + auto-approve eligibility
+        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true'
+        id: eligibility
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          git diff "$BASE...$HEAD" > /tmp/pr.diff
+
+          DIFF_BYTES=$(wc -c < /tmp/pr.diff)
+          echo "diff_bytes=$DIFF_BYTES" >> $GITHUB_OUTPUT
+
+          if [ "$DIFF_BYTES" -gt 50000 ]; then
+            echo "skip_oversize=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "skip_oversize=false" >> $GITHUB_OUTPUT
+
+          STATS=$(git diff "$BASE...$HEAD" --shortstat || echo "")
+          ADDS=$(echo "$STATS" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+          DELS=$(echo "$STATS" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo 0)
+          TOTAL=$((ADDS + DELS))
+          echo "total_lines=$TOTAL" >> $GITHUB_OUTPUT
+
+          CHANGED=$(git diff "$BASE...$HEAD" --name-only)
+          FORBIDDEN_REGEX='(^|/)\.github/|(^|/)\.env|(^|/)secrets\.yaml$|secret|password|token|/key|/auth'
+          FORBIDDEN=$(echo "$CHANGED" | grep -iE "$FORBIDDEN_REGEX" || true)
+          DELETED_TESTS=$(git diff "$BASE...$HEAD" --diff-filter=D --name-only | grep -iE 'test|spec' || true)
+
+          ELIGIBLE=true
+          REASON=""
+          if [ "$TOTAL" -gt 100 ]; then
+            ELIGIBLE=false
+            REASON="diff too large ($TOTAL lines; auto-approve cap is 100)"
+          elif [ -n "$FORBIDDEN" ]; then
+            ELIGIBLE=false
+            FIRST=$(echo "$FORBIDDEN" | head -1)
+            REASON="sensitive path touched ($FIRST)"
+          elif [ -n "$DELETED_TESTS" ]; then
+            ELIGIBLE=false
+            REASON="test/spec file deleted ($(echo "$DELETED_TESTS" | head -1))"
+          fi
+
+          echo "eligible=$ELIGIBLE" >> $GITHUB_OUTPUT
+          echo "reason=$REASON" >> $GITHUB_OUTPUT
+
+      - name: Ask Haiku
+        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true' && steps.eligibility.outputs.skip_oversize != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ELIGIBLE: ${{ steps.eligibility.outputs.eligible }}
+          LINES: ${{ steps.eligibility.outputs.total_lines }}
+          REASON: ${{ steps.eligibility.outputs.reason }}
+        run: |
+          if [ "$ELIGIBLE" = "true" ]; then
+            ELIGIBILITY_NOTE="This PR is ELIGIBLE for auto-approval based on diff size (${LINES} lines) and no sensitive paths touched. If the diff is unambiguously safe — typo fix, doc-only edit, simple refactor — start your response with exactly 'AUTO-APPROVE:' followed by a one-line explanation. Otherwise do NOT start with AUTO-APPROVE."
+          else
+            ELIGIBILITY_NOTE="This PR is NOT eligible for auto-approval (reason: ${REASON}). Write a thorough review."
+          fi
+
+          SYSTEM_PROMPT="You are reviewing a PR on the ${{ github.repository }} repo. ${ELIGIBILITY_NOTE} Be concise. Flag only: (1) likely bugs, (2) regressions, (3) missing tests for risky changes, (4) secrets in diff. Skip style nits unless they cause bugs."
+
+          DIFF=$(cat /tmp/pr.diff)
+          BODY=$(jq -n \
+            --arg system "$SYSTEM_PROMPT" \
+            --arg diff "$DIFF" \
+            '{model:"claude-haiku-4-5-20251001",max_tokens:1024,system:$system,messages:[{role:"user",content:$diff}]}')
+
+          RESP=$(curl -sS https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "$BODY")
+
+          TEXT=$(echo "$RESP" | jq -r '.content[0].text // ("Claude review failed: " + (.error.message // "unknown error"))')
+          printf '%s\n' "$TEXT" > /tmp/review.txt
+
+      - name: Post review comment
+        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true' && steps.eligibility.outputs.skip_oversize != 'true'
+        id: post_review
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # @v9
+        env:
+          ELIGIBLE: ${{ steps.eligibility.outputs.eligible }}
+          REASON: ${{ steps.eligibility.outputs.reason }}
+        with:
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('/tmp/review.txt', 'utf8').trim();
+            const eligible = process.env.ELIGIBLE === 'true';
+            const reason = process.env.REASON || '';
+            const autoApprove = eligible && review.startsWith('AUTO-APPROVE:');
+            core.setOutput('auto_approve', autoApprove ? 'true' : 'false');
+            const header = autoApprove
+              ? '🤖 **Claude Haiku — approved (auto-merging when checks pass)**'
+              : eligible
+                ? '🤖 **Claude Haiku review** (Haiku flagged concerns — review before merging)'
+                : `🤖 **Claude Haiku review** (manual review recommended — ${reason})`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: header + '\n\n' + review,
+            });
+
+      - name: Enable auto-merge
+        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true' && steps.eligibility.outputs.skip_oversize != 'true' && steps.post_review.outputs.auto_approve == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # @v9
+        with:
+          script: |
+            // We can't call pulls.merge() directly here — branch protection requires
+            // the "review / review" check to be passing, but we ARE that check, still
+            // in progress. Calling merge synchronously returns 405 every time.
+            //
+            // Solution: use the enablePullRequestAutoMerge GraphQL mutation to flag
+            // the PR as "auto-merge once all required checks pass". This workflow
+            // then exits cleanly, its own check goes green, GitHub merges the PR
+            // server-side, and (with branch deletion configured at the repo level
+            // or via the auto-merge API) cleans up the branch.
+
+            const pr_number = context.issue.number;
+            const pr_node_id = context.payload.pull_request.node_id;
+
+            // Step 1: try enablePullRequestAutoMerge.
+            // GitHub's GraphQL sometimes returns the mutation as "successful"
+            // (auto-merge IS armed on the PR) but ALSO includes a partial
+            // "Resource not accessible by integration" error on response sub-fields
+            // — Octokit then throws. So we don't trust the throw alone; we re-read
+            // the PR state and check whether autoMergeRequest actually got set.
+            let armed = false;
+            let enable_err = null;
+            try {
+              await github.graphql(`
+                mutation EnableAutoMerge($pullRequestId: ID!) {
+                  enablePullRequestAutoMerge(input: {
+                    pullRequestId: $pullRequestId,
+                    mergeMethod: SQUASH
+                  }) {
+                    clientMutationId
+                  }
+                }
+              `, { pullRequestId: pr_node_id });
+              armed = true;
+            } catch (e) {
+              enable_err = e.message || String(e);
+            }
+
+            // Verify whatever happened above by reading the PR's auto-merge state.
+            if (!armed) {
+              try {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr_number,
+                });
+                if (pr.auto_merge && pr.auto_merge.enabled_at) armed = true;
+              } catch (_) { /* ignore — fall through */ }
+            }
+
+            if (armed) {
+              core.info(`Auto-merge enabled on PR #${pr_number} (squash). GitHub will merge once all required checks pass.`);
+              return;
+            }
+
+            // Step 2: enable failed AND auto-merge isn't armed. Fall back to
+            // direct merge — this only works if there are no in-progress
+            // required checks (i.e. the chicken-and-egg doesn't apply).
+            core.warning(`enablePullRequestAutoMerge failed: ${enable_err}. Trying direct pulls.merge as fallback.`);
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr_number,
+                merge_method: 'squash',
+              });
+              core.info(`Direct merge succeeded for PR #${pr_number}.`);
+            } catch (merge_err) {
+              core.setFailed(`Both auto-merge enable and direct merge failed: ${merge_err.message}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr_number,
+                body: `🤖 Auto-merge could not be enabled: ${enable_err}. Please merge manually if appropriate.`,
+              }).catch(() => {});
+            }
+
+      - name: Comment on oversize diff
+        if: github.actor != 'dependabot[bot]' && steps.eligibility.outputs.skip_oversize == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # @v9
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '🤖 Claude review skipped — PR diff > 50KB (cost guard). Please review manually.',
+            });

@@ -3,10 +3,18 @@ name: Labeler
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   label:
-    permissions:
-      contents: read
-      pull-requests: write
-    uses: samprodger/repo-template/.github/workflows/labeler.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # @v6
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: true
