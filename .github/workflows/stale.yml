@@ -4,7 +4,29 @@ on:
   schedule:
     - cron: '0 9 * * 1'
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  issues: write
+  pull-requests: write
 
 jobs:
   stale:
-    uses: samprodger/repo-template/.github/workflows/stale.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f # @v10
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          only-issue-labels: rainy-day
+          exempt-issue-labels: 'keep,blocker,active'
+          days-before-stale: 90
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-issue-message: |
+            This issue has had no activity for 90 days. Marking as stale.
+            Will close in 14 days unless you comment, add `keep`, or add `active`.
+          close-issue-message: |
+            Closing as inactive. Reopen with `gh issue reopen <N>` if still relevant.
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          operations-per-run: 50
