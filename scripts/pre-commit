@@ -10,7 +10,7 @@ PATTERNS=(
   'gho_'              # GitHub OAuth token
   'github_pat_'       # GitHub fine-grained PAT
   'ops_'              # 1Password service account
-  'tk_[a-z0-9]\{20\}' # ntfy token
+  'tk_[a-z0-9]{20}' # ntfy token
 )
 
 STAGED=$(git diff --cached --name-only)
