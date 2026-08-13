@@ -1,26 +1,79 @@
 #!/usr/bin/env bash
-# Pre-commit hook: block commits containing API keys or tokens.
-# Install via: bash scripts/install-hooks.sh
+# Pre-commit hook: block secrets in content and sensitive files by path.
 
 PATTERNS=(
-  'sk-ant-'           # Anthropic
-  'gsk_'              # Groq
-  'AIza'              # Google API key
-  'ghp_'              # GitHub personal access token
-  'gho_'              # GitHub OAuth token
-  'github_pat_'       # GitHub fine-grained PAT
-  'ops_'              # 1Password service account
-  'tk_[a-z0-9]{20}' # ntfy token
+  'sk-ant-'
+  'gsk_'
+  'AIza'
+  'ghp_'
+  'gho_'
+  'github_pat_'
+  'ops_'
+  'tk_[a-z0-9]{20}'
+)
+
+BLOCKED_PATHS=(
+  '\.env$'
+  '\.env\.'
+  'wan_state\.json'
+  'wan_check/'
+  '\.log$'
+  '\.log\.'
+  '/logs/'
+  '\.png$'
+  '\.jpg$'
+  '\.gz$'
+  'backup/'
 )
 
 STAGED=$(git diff --cached --name-only)
 [ -z "$STAGED" ] && exit 0
 
+# Prove the scan can still catch something before trusting it to pass.
+#
+# The copy installed in .git/hooks was a stale revision using grep '^\+', which
+# is an invalid repetition operator in BRE. Every pattern check errored, matched
+# nothing and passed vacuously, so the hook exited 0 on every commit for as long
+# as it had been installed. A secret scanner that silently degrades to a no-op is
+# worse than no scanner, because the green exit is read as an all-clear.
+#
+# The canary is assembled at runtime so this file contains no string that would
+# trip the scan on itself, and it is never printed.
+CANARY_PAT=$(printf 'sk\055ant\055')
+if ! printf '+key=%scanary\n' "$CANARY_PAT" | grep -E '^\+' 2>/dev/null \
+     | grep -qE "$CANARY_PAT"; then
+  echo "BLOCKED: pre-commit secret scan is not functional on this machine."
+  echo "  The grep pipeline matched nothing against a known-bad test string."
+  echo "  Fix the hook rather than bypassing it: bash scripts/install-hooks.sh"
+  exit 1
+fi
+
+# Block sensitive file paths
+for path_pattern in "${BLOCKED_PATHS[@]}"; do
+  match=$(echo "$STAGED" | grep -E "$path_pattern" | head -1)
+  if [ -n "$match" ]; then
+    echo "BLOCKED: sensitive file path staged: $match"
+    echo "Add to .gitignore or unstage with: git restore --staged '$match'"
+    exit 1
+  fi
+done
+
+# Block secret patterns in content.
+#
+# The scanner's own source is excluded, and only its own source. PATTERNS above
+# necessarily contains every string being searched for, so scanning this file
+# matches on the first pattern every time and the hook can never be committed
+# into a repo where it is already installed. That is a chicken-and-egg, not a
+# secret: the alternative is committing the scanner with --no-verify, which
+# teaches the habit of bypassing it.
+#
+# The exclusion is a single exact path, not a pattern, so it cannot be widened
+# by accident. Path checks above still apply to this file.
 for pattern in "${PATTERNS[@]}"; do
-  match=$(git diff --cached | grep '^\+' | grep -v '^\+\+\+' | grep -E "$pattern" | head -1)
+  match=$(git diff --cached -- . ':(exclude)scripts/pre-commit' \
+          | grep -E '^\+' | grep -vE '^\+\+\+' | grep -E "$pattern" | head -1)
   if [ -n "$match" ]; then
     echo "BLOCKED: commit contains what looks like a secret (pattern: $pattern)"
-    echo "  $match"
     echo "Remove the secret and try again."
     exit 1
   fi
