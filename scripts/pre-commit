@@ -26,6 +26,16 @@ BLOCKED_PATHS=(
   'backup/'
 )
 
+# Files that look like env files and are meant to be committed. `.env.refs` holds
+# op:// references and no values, and dartpi's own instructions say to add each new
+# credential's reference to it and commit — so the path block above stopped the
+# documented workflow, in the repo that documents it. The example/sample/template
+# variants are placeholders by the same convention.
+#
+# This narrows the path rule only. Every one of these files still goes through the
+# content scan below, so a real value pasted into .env.refs is still caught.
+ALLOWED_ENV_FILES='(^|/)\.env\.(refs|example|sample|template)$'
+
 STAGED=$(git diff --cached --name-only)
 [ -z "$STAGED" ] && exit 0
 
@@ -50,7 +60,7 @@ fi
 
 # Block sensitive file paths
 for path_pattern in "${BLOCKED_PATHS[@]}"; do
-  match=$(echo "$STAGED" | grep -E "$path_pattern" | head -1)
+  match=$(echo "$STAGED" | grep -E "$path_pattern" | grep -Ev "$ALLOWED_ENV_FILES" | head -1)
   if [ -n "$match" ]; then
     echo "BLOCKED: sensitive file path staged: $match"
     echo "Add to .gitignore or unstage with: git restore --staged '$match'"
