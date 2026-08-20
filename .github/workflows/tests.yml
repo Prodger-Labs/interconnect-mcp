@@ -1,0 +1,22 @@
+name: tests
+
+# The repo had no test check at all, so a dependency bump could merge and break
+# the server with nothing to catch it. express is the concrete case: it was
+# imported but never declared, and resolved only as a transitive of
+# @modelcontextprotocol/sdk, which now ships hono alongside it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: node --check server.js
+      - run: npm test
