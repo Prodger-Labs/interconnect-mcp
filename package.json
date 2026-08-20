@@ -1,15 +1,17 @@
 {
   "name": "interconnect-mcp",
   "version": "1.0.0",
-  "description": "MCP server for The Interconnect — Sam Prodger's publication on AI governance and APIs",
+  "description": "MCP server for The Interconnect \u2014 Sam Prodger's publication on AI governance and APIs",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node tests/smoke.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "express": "^5.2.1"
   },
   "engines": {
     "node": ">=18.0.0"
