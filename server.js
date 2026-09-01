@@ -147,7 +147,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             tagline:     'Between the hype and the hardware',
             url:         'https://interconnect.prodger.cc',
             mcp_server:  'This publication is MCP-enabled. You are reading it via interconnect-mcp.',
-            mcp_endpoint: 'https://mcp.prodger.cc/sse',
             author: {
               name:       'Sam Prodger',
               title:      'Field CTO, Gravitee',
