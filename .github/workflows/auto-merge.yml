@@ -50,7 +50,11 @@ jobs:
               const others = check_runs.filter(c => !c.name.includes('auto-merge-self'));
               const incomplete = others.filter(c => c.status !== 'completed');
 
-              if (incomplete.length === 0) {
+              // No checks at all is not the same as every check passing. An empty
+              // list satisfies incomplete.length === 0, so without the others.length
+              // guard a PR with no checks would merge on nothing. Keep waiting, and
+              // let the timeout below refuse the merge.
+              if (others.length > 0 && incomplete.length === 0) {
                 const failed = others.filter(c =>
                   !['success', 'neutral', 'skipped'].includes(c.conclusion)
                 );
@@ -63,11 +67,13 @@ jobs:
                 return;
               }
 
-              core.info(`Waiting on ${incomplete.length} check(s): ${incomplete.map(c => c.name).join(', ')}`);
+              core.info(others.length === 0
+                ? 'No other checks have registered on this commit yet. Waiting.'
+                : `Waiting on ${incomplete.length} check(s): ${incomplete.map(c => c.name).join(', ')}`);
               await new Promise(r => setTimeout(r, intervalMs));
             }
 
-            core.setFailed('Timed out after 3 min waiting for checks.');
+            core.setFailed('Timed out after 3 min waiting for at least one passing check.');
             core.setOutput('result', 'timeout');
 
       - name: Merge + delete branch
