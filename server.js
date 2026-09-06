@@ -11,6 +11,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const envPath = join(__dirname, '.env');
@@ -36,6 +37,8 @@ if (!GHOST_KEY) {
   process.exit(1);
 }
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
 async function ghostFetch(endpoint, params = {}) {
   const url = new URL(`${API_BASE}${endpoint}`);
   url.searchParams.set('key', GHOST_KEY);
@@ -50,6 +53,7 @@ async function ghostFetch(endpoint, params = {}) {
   return res.json();
 }
 
+// Converts HTML to readable plain text, preserving structure for agents.
 function stripHtml(html) {
   return html
     .replace(/<h[1-6][^>]*>/gi, '\n\n')
@@ -71,8 +75,8 @@ function stripHtml(html) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&hellip;/g, '...')
-    .replace(/&mdash;/g, '—')
-    .replace(/&ndash;/g, '–')
+    .replace(/&mdash;/g, '\u2014')
+    .replace(/&ndash;/g, '\u2013')
     .replace(/&lsquo;/g, '\u2018')
     .replace(/&rsquo;/g, '\u2019')
     .replace(/&ldquo;/g, '\u201C')
@@ -81,9 +85,34 @@ function stripHtml(html) {
     .trim();
 }
 
+// Sanitise a search query for use in Ghost NQL filter expressions.
 function sanitiseQuery(query) {
   return query.replace(/['"\\]/g, ' ').trim();
 }
+
+// Validate Ghost slug format — lowercase alphanumeric and hyphens only.
+function isValidSlug(slug) {
+  return typeof slug === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
+}
+
+// Strip common prompt injection patterns from content returned to agents.
+function sanitiseContent(text) {
+  return text
+    .replace(/<\|[^|]*\|>/g, '')                                    // LLM special tokens e.g. <|im_start|>
+    .replace(/\n+(Human|Assistant|User|System)\s*:/gi, '\n[...]')   // role injection
+    .replace(/\[INST\]|\[\/INST\]/g, '')                            // Llama instruction tokens
+    .replace(/###\s*(Human|Assistant|Instruction|Response)\b/gi, '###') // injection headers
+    .replace(/\n+ignore (previous|all|above|prior) instructions?\b/gi, '') // direct override attempts
+    .trim();
+}
+
+// Simple request logger — writes to stderr, captured by Fly.io logs.
+function logRequest(tool, detail = '') {
+  const ts = new Date().toISOString();
+  console.error(`[${ts}] tool=${tool}${detail ? ' ' + detail : ''}`);
+}
+
+// ── MCP Server ─────────────────────────────────────────────────────────────
 
 const server = new Server(
   { name: 'interconnect-mcp', version: '1.0.0' },
@@ -141,12 +170,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
 
       case 'get_publication_info': {
+        logRequest('get_publication_info');
         return {
           content: [{ type: 'text', text: JSON.stringify({
-            publication: 'The Interconnect',
-            tagline:     'Between the hype and the hardware',
-            url:         'https://interconnect.prodger.cc',
-            mcp_server:  'This publication is MCP-enabled. You are reading it via interconnect-mcp.',
+            publication:  'The Interconnect',
+            tagline:      'Between the hype and the hardware',
+            url:          'https://interconnect.prodger.cc',
+            mcp_server:   'This publication is MCP-enabled. You are reading it via interconnect-mcp.',
             mcp_endpoint: 'https://mcp.prodger.cc/sse',
             author: {
               name:       'Sam Prodger',
@@ -162,6 +192,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'list_articles': {
+        logRequest('list_articles', `page=${args?.page || 1} limit=${args?.limit || 20}${args?.tag ? ' tag=' + args.tag : ''}`);
         const params = {
           fields:  'title,slug,excerpt,url,published_at,reading_time',
           include: 'tags',
@@ -169,7 +200,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           page:    args?.page  || 1,
           order:   'published_at desc',
         };
-        if (args?.tag) params.filter = `tag:${args.tag}`;
+        if (args?.tag) params.filter = `tag:${sanitiseQuery(args.tag)}`;
         const data     = await ghostFetch('/posts/', params);
         const articles = data.posts.map(p => ({
           title:                p.title,
@@ -191,6 +222,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_article': {
+        if (!isValidSlug(args.slug)) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid slug format.' }) }] };
+        }
+        logRequest('get_article', `slug=${args.slug}`);
         const data = await ghostFetch(`/posts/slug/${args.slug}/`, {
           fields:  'title,slug,html,excerpt,meta_description,url,published_at,reading_time',
           include: 'tags,authors',
@@ -207,7 +242,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             author:               (post.authors || [{ name: 'Sam Prodger' }])[0].name,
             excerpt:              post.excerpt          || '',
             meta_description:     post.meta_description || '',
-            content:              stripHtml(post.html   || ''),
+            content:              sanitiseContent(stripHtml(post.html || '')),
           }, null, 2) }],
         };
       }
@@ -216,6 +251,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const raw   = (args.query || '').trim();
         const query = sanitiseQuery(raw);
         if (!query) return { content: [{ type: 'text', text: 'Please provide a search query.' }] };
+        logRequest('search_articles', `query="${query}"`);
         const data = await ghostFetch('/posts/', {
           fields: 'title,slug,excerpt,url,published_at',
           filter: `title:~'${query}',custom_excerpt:~'${query}'`,
@@ -252,6 +288,15 @@ const PORT = process.env.PORT;
 if (PORT) {
   const app = express();
   const transports = new Map();
+
+  // Rate limiting — 100 requests per IP per 15 minutes
+  app.use(rateLimit({
+    windowMs:        15 * 60 * 1000,
+    max:             100,
+    standardHeaders: true,
+    legacyHeaders:   false,
+    message:         { error: 'Too many requests, please try again later.' },
+  }));
 
   app.get('/sse', async (req, res) => {
     const transport = new SSEServerTransport('/messages', res);
