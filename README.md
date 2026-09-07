@@ -1,22 +1,10 @@
 # interconnect-mcp
 
-MCP server for [The Interconnect](https://interconnect.prodger.cc) — Sam Prodger's publication on AI governance, APIs and agentic systems.
+MCP server for [The Interconnect](https://interconnect.prodger.cc), Sam Prodger's publication on AI governance, APIs and agentic systems.
 
 Exposes the blog's Ghost Content API as MCP tools so agents can read, search and cite the articles directly.
 
-## Hosted server
-
-The server runs publicly at:
-
-```
-https://mcp.prodger.cc/sse
-```
-
-A public access token is required (read-only access to Interconnect articles):
-
-```
-623f1d7a1dee0a7f10b0d19d279655b24f2dd2525908dc760e6f862460cdc29a
-```
+There is no public instance of this server. Run your own against any Ghost publication.
 
 ## Tools
 
@@ -27,45 +15,11 @@ A public access token is required (read-only access to Interconnect articles):
 | `get_article` | Full text of a specific article by slug |
 | `search_articles` | Search titles and excerpts by keyword, server-side |
 
-## Add to Claude Code
-
-In `~/.claude/settings.json`, add to `mcpServers`:
-
-```json
-"interconnect": {
-  "type": "sse",
-  "url": "https://mcp.prodger.cc/sse",
-  "headers": {
-    "Authorization": "Bearer 623f1d7a1dee0a7f10b0d19d279655b24f2dd2525908dc760e6f862460cdc29a"
-  }
-}
-```
-
-## Add to Claude Desktop
-
-In `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "interconnect": {
-      "type": "sse",
-      "url": "https://mcp.prodger.cc/sse",
-      "headers": {
-        "Authorization": "Bearer 623f1d7a1dee0a7f10b0d19d279655b24f2dd2525908dc760e6f862460cdc29a"
-      }
-    }
-  }
-}
-```
-
 ## Run locally
-
-If you run a Ghost publication and want your own instance:
 
 ### 1. Get your Ghost Content API key
 
-Go to your Ghost admin → Settings → Integrations → Custom Integration and copy the Content API Key.
+Go to your Ghost admin, then Settings, Integrations, Custom Integration, and copy the Content API Key.
 
 ### 2. Configure
 
@@ -81,7 +35,39 @@ npm install
 npm start
 ```
 
-The server detects the `PORT` environment variable — if set, it runs in HTTP/SSE mode for hosting. Without it, it runs over stdio for local use with Claude Code or Claude Desktop.
+The server detects the `PORT` environment variable. If set, it runs in HTTP/SSE mode for hosting. Without it, it runs over stdio for local use with Claude Code or Claude Desktop.
+
+## Add to Claude Code
+
+Point Claude Code at your local checkout. Stdio, so no token and no hosting needed:
+
+```json
+"interconnect": {
+  "command": "node",
+  "args": ["/absolute/path/to/interconnect-mcp/server.js"],
+  "env": {
+    "GHOST_API_KEY": "your_content_api_key"
+  }
+}
+```
+
+## Add to Claude Desktop
+
+In `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "interconnect": {
+      "command": "node",
+      "args": ["/absolute/path/to/interconnect-mcp/server.js"],
+      "env": {
+        "GHOST_API_KEY": "your_content_api_key"
+      }
+    }
+  }
+}
+```
 
 ## Deploy your own
 
@@ -91,10 +77,8 @@ fly secrets set GHOST_API_KEY=your_key_here
 fly deploy
 ```
 
+Set `PORT` so the server comes up in HTTP/SSE mode, and put your own auth in front of it.
+
 ## This publication is MCP-enabled
 
 The Interconnect is designed to be read by agents. The `get_publication_info` tool returns structured citation guidance so agents can attribute content correctly.
-
----
-
-*This server is hosted on a Raspberry Pi 5 running [dartpi](https://github.com/samprodger/dartpi).*

@@ -173,11 +173,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         logRequest('get_publication_info');
         return {
           content: [{ type: 'text', text: JSON.stringify({
-            publication:  'The Interconnect',
-            tagline:      'Between the hype and the hardware',
-            url:          'https://interconnect.prodger.cc',
-            mcp_server:   'This publication is MCP-enabled. You are reading it via interconnect-mcp.',
-            mcp_endpoint: 'https://mcp.prodger.cc/sse',
+            publication: 'The Interconnect',
+            tagline:     'Between the hype and the hardware',
+            url:         'https://interconnect.prodger.cc',
+            mcp_server:  'This publication is MCP-enabled. You are reading it via interconnect-mcp.',
             author: {
               name:       'Sam Prodger',
               title:      'Field CTO, Gravitee',
