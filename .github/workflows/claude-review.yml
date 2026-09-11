@@ -2,7 +2,11 @@ name: Claude PR review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # ready_for_review matters because the auto-merge step below skips drafts.
+    # Without it, taking a PR out of draft fires nothing at all and the PR sits
+    # green and unmerged forever, since no other workflow here listens for that
+    # transition either.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_call:
     secrets:
       ANTHROPIC_API_KEY:
@@ -155,16 +159,22 @@ jobs:
         env:
           ELIGIBLE: ${{ steps.eligibility.outputs.eligible }}
           REASON: ${{ steps.eligibility.outputs.reason }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         with:
           script: |
             const fs = require('fs');
             const review = fs.readFileSync('/tmp/review.txt', 'utf8').trim();
             const eligible = process.env.ELIGIBLE === 'true';
             const reason = process.env.REASON || '';
+            const isDraft = process.env.DRAFT === 'true';
             const autoApprove = eligible && review.startsWith('AUTO-APPROVE:');
             core.setOutput('auto_approve', autoApprove ? 'true' : 'false');
+            // Don't promise a merge the auto-merge step won't perform: it skips
+            // drafts, so on a draft this says approved and nothing more.
             const header = autoApprove
-              ? '🤖 **Claude Haiku — approved (auto-merging when checks pass)**'
+              ? (isDraft
+                  ? '🤖 **Claude Haiku — approved.** Draft, so not merging; mark ready when you want it in.'
+                  : '🤖 **Claude Haiku — approved (auto-merging when checks pass)**')
               : eligible
                 ? '🤖 **Claude Haiku review** (Haiku flagged concerns — review before merging)'
                 : `🤖 **Claude Haiku review** (manual review recommended — ${reason})`;
@@ -175,8 +185,14 @@ jobs:
               body: header + '\n\n' + review,
             });
 
+      # Draft PRs are excluded here, not in the job's `if`, so the review itself
+      # still runs and posts while a PR is in progress. Only the merge is held
+      # back. Without this guard, pulls.merge returns 405 on a draft and the
+      # fallback's core.setFailed turns the whole check red — so every draft PR
+      # in the repo shows a failing "review" check. auto-merge.yml already skips
+      # drafts for the same reason.
       - name: Enable auto-merge
-        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true' && steps.eligibility.outputs.skip_oversize != 'true' && steps.post_review.outputs.auto_approve == 'true'
+        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true' && steps.eligibility.outputs.skip_oversize != 'true' && steps.post_review.outputs.auto_approve == 'true' && !github.event.pull_request.draft
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # @v9
         with:
           script: |
