@@ -17,6 +17,17 @@ permissions:
   pull-requests: write
   checks: read         # required for the auto-merge step's checks.listForRef call
 
+# Two events in quick succession (a push plus a ready_for_review, say) each get
+# a run, and both can reach the merge step. Serialise per PR so they can't race.
+#
+# cancel-in-progress stays false deliberately. Cancelling would leave a check run
+# concluded as `cancelled` on the SHA, and auto-merge.yml's gate only accepts
+# success/neutral/skipped — so a cancelled run there would read as a failed check
+# and block the very merge it was trying to tidy up.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -208,6 +219,20 @@ jobs:
 
             const pr_number = context.issue.number;
             const pr_node_id = context.payload.pull_request.node_id;
+
+            // Serialised runs still both reach this step — the second just waits
+            // rather than being cancelled. If the first one merged, merging again
+            // returns 405 and the catch below would fail the check over a PR that
+            // is already in. Re-read state and bail out cleanly instead.
+            const { data: current } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr_number,
+            });
+            if (current.merged || current.state === 'closed') {
+              core.info(`PR #${pr_number} is already ${current.merged ? 'merged' : 'closed'}; nothing to do.`);
+              return;
+            }
 
             // Step 1: try enablePullRequestAutoMerge.
             // GitHub's GraphQL sometimes returns the mutation as "successful"
