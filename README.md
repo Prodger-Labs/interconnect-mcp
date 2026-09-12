@@ -74,10 +74,31 @@ In `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```bash
 fly launch
 fly secrets set GHOST_API_KEY=your_key_here
+fly secrets set TRUST_PROXY=1
 fly deploy
 ```
 
 Set `PORT` so the server comes up in HTTP/SSE mode, and put your own auth in front of it.
+
+### Environment
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GHOST_API_KEY` | — | Required. Ghost Content API key. The server exits without it. |
+| `PORT` | unset | Set for HTTP/SSE mode. Unset for stdio. |
+| `TRUST_PROXY` | `0` | Number of proxy hops in front of the server. |
+| `GHOST_URL` | the publication | Ghost base URL. Override to point at another site. |
+
+`TRUST_PROXY` matters more than it looks. Behind a reverse proxy every request
+arrives from the proxy's address, so at the default of `0` the rate limiter
+sees a single client and its 100-per-15-minutes becomes a **global** budget
+shared by everyone — one busy agent locks out the rest. Set it to the real hop
+count (`1` for Fly.io and most PaaS) and the limit applies per client.
+
+Set it to the real number, not a large one. Each hop you claim is a header the
+server will believe, so over-trusting lets a caller supply their own
+`X-Forwarded-For` and mint a fresh identity per request, evading the limiter
+entirely. If you are not behind a proxy, leave it at `0`.
 
 ## This publication is MCP-enabled
 
