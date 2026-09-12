@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/unit.mjs && node tests/smoke.mjs",
+    "test": "node --test tests/unit.mjs && node --test tests/integration.mjs && node tests/smoke.mjs",
     "test:unit": "node --test tests/unit.mjs",
+    "test:integration": "node --test tests/integration.mjs",
     "test:smoke": "node tests/smoke.mjs"
   },
   "dependencies": {

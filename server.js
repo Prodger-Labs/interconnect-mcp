@@ -29,7 +29,11 @@ if (existsSync(envPath)) {
   }
 }
 
-const GHOST_URL = 'https://interconnect.prodger.cc';
+// Overridable so the tool handlers can be exercised against a stub Ghost.
+// Without this the four tools are untestable — which is why, until now, none
+// of them had a test. Defaults to the real publication, so nothing changes
+// unless GHOST_URL is deliberately set.
+const GHOST_URL = process.env.GHOST_URL || 'https://interconnect.prodger.cc';
 const API_BASE  = `${GHOST_URL}/ghost/api/content`;
 const GHOST_KEY = process.env.GHOST_API_KEY;
 
@@ -56,6 +60,17 @@ async function ghostFetch(endpoint, params = {}) {
 
 // stripHtml, sanitiseQuery, isValidSlug and sanitiseContent live in lib/text.js
 // so they can be unit tested without booting a server.
+
+// Coerce an agent-supplied number into the documented range. The inputSchema
+// advertises "max 100", and nothing was holding us to it: limit=10000 went
+// straight to Ghost and returned the whole corpus into the caller's context,
+// while limit=-5 was passed through as-is. A schema the server does not
+// enforce is a promise to the agent that it does not keep.
+function clampInt(value, { min, max, fallback }) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, min), max);
+}
 
 // Simple request logger — writes to stderr, captured by Fly.io logs.
 function logRequest(tool, detail = '') {
@@ -146,8 +161,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const params = {
           fields:  'title,slug,excerpt,url,published_at,reading_time',
           include: 'tags',
-          limit:   args?.limit || 20,
-          page:    args?.page  || 1,
+          limit:   clampInt(args?.limit, { min: 1, max: 100, fallback: 20 }),
+          page:    clampInt(args?.page,  { min: 1, max: Number.MAX_SAFE_INTEGER, fallback: 1 }),
           order:   'published_at desc',
         };
         if (args?.tag) params.filter = `tag:${sanitiseQuery(args.tag)}`;
