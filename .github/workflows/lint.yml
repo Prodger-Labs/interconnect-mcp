@@ -9,16 +9,26 @@ permissions:
 
 jobs:
   lint:
-    # Moved off ubuntu-latest to cut billed Actions minutes: this repo is
-    # private, so every hosted minute is charged. Safe here because private
-    # repos take no outside fork PRs, which is the usual reason not to put
-    # pull_request work on your own hardware.
+    # Which runner this lands on is a repository variable, not a hardcoded
+    # label, and it defaults to ubuntu-latest.
     #
-    # The trade is availability: while this job is self-hosted, nothing
-    # merges when the runners are down, because it gates the merge like
-    # every other check. timeout-minutes bounds a wedged run; it does not
-    # bound queue time, which GitHub gives up on after 24h.
-    runs-on: [self-hosted, linux]
+    # Hardcoding self-hosted made the workflow depend on hardware being up
+    # with no way back: when the runners did not claim the job it sat queued
+    # rather than failing, for the 24h GitHub waits before giving up, and
+    # since this check gates the merge nothing could land in the meantime —
+    # including a fix for the runners. A switch that defaults to the hosted
+    # runner cannot wedge the repo that way.
+    #
+    # To move this onto your own hardware, set the CI_RUNNER repository
+    # variable to self-hosted (Settings -> Secrets and variables -> Actions
+    # -> Variables). To move it back, clear the variable. Neither needs a
+    # commit, so recovering from a dead runner is a settings change rather
+    # than a PR that cannot merge because the runner is dead.
+    #
+    # Safe to point at your own hardware only while this repo is private:
+    # self-hosted runners on pull_request workflows otherwise let a fork PR
+    # run its own code on your machine, and this job has no same-repo guard.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # @v7.0.1
