@@ -9,7 +9,17 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    # Moved off ubuntu-latest to cut billed Actions minutes: this repo is
+    # private, so every hosted minute is charged. Safe here because private
+    # repos take no outside fork PRs, which is the usual reason not to put
+    # pull_request work on your own hardware.
+    #
+    # The trade is availability: while this job is self-hosted, nothing
+    # merges when the runners are down, because it gates the merge like
+    # every other check. timeout-minutes bounds a wedged run; it does not
+    # bound queue time, which GitHub gives up on after 24h.
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # @v7.0.1
 
@@ -36,11 +46,32 @@ jobs:
               brackets:
                 max-spaces-inside: 1
 
+      # The repo currently has no Python at all, so installing an interpreter
+      # and pip installing ruff on every run bought nothing. It costs real
+      # time on a self-hosted arm64 box in particular, where pip often builds
+      # wheels from source rather than fetching them.
+      #
+      # Detected rather than deleted, so Python linting comes back by itself
+      # the moment a .py file appears, instead of being silently absent.
+      - name: Detect Python sources
+        id: python_sources
+        run: |
+          set -euo pipefail
+          if find . -name '*.py' -not -path './.git/*' -not -path './.venv/*' \
+                    -not -path '*/node_modules/*' -print -quit | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Python sources found; skipping the ruff lint."
+          fi
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # @v7.0.0
+        if: steps.python_sources.outputs.found == 'true'
         with:
           python-version: '3.12'
 
       - name: Python lint (ruff)
+        if: steps.python_sources.outputs.found == 'true'
         run: |
           pip install ruff
           ruff check . \
