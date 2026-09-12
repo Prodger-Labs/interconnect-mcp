@@ -12,7 +12,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { stripHtml, sanitiseQuery, isValidSlug, sanitiseContent } from './lib/text.js';
+import { stripHtml, sanitiseQuery, isValidSlug, sanitiseContent, sanitiseLogValue } from './lib/text.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const envPath = join(__dirname, '.env');
@@ -44,16 +44,50 @@ if (!GHOST_KEY) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+// A tool call waits on this, and an agent waits on the tool call. Without a
+// deadline a Ghost that accepts the connection and then never answers hangs
+// the caller indefinitely, with nothing to distinguish it from slow work.
+const GHOST_TIMEOUT_MS = clampInt(process.env.GHOST_TIMEOUT_MS, {
+  min: 1000, max: 120_000, fallback: 10_000,
+});
+
 async function ghostFetch(endpoint, params = {}) {
   const url = new URL(`${API_BASE}${endpoint}`);
   url.searchParams.set('key', GHOST_KEY);
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, String(v));
   }
-  const res = await fetch(url.toString());
+
+  let res;
+  try {
+    res = await fetch(url.toString(), { signal: AbortSignal.timeout(GHOST_TIMEOUT_MS) });
+  } catch (err) {
+    // AbortSignal.timeout rejects with a TimeoutError. Say so plainly rather
+    // than surfacing a bare "fetch failed", which reads like a bug in us.
+    if (err?.name === 'TimeoutError') {
+      throw new Error(`Ghost API did not respond within ${GHOST_TIMEOUT_MS}ms`);
+    }
+    throw new Error(`Ghost API unreachable: ${err?.name ?? 'Error'}`);
+  }
+
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Ghost API ${res.status}: ${body}`);
+    // The body is attacker-influenceable in a way article HTML is not assumed
+    // to be, and it lands in the agent's context via err.message without ever
+    // passing stripHtml. Run it through the same defence and cap it, so an
+    // error cannot become an injection channel or flood the context window.
+    // The body does not reach the agent. It is attacker-influenceable, and it
+    // was an injection channel that sanitiseContent could not close: that
+    // function anchors its rules to start-of-string and newline because it
+    // guards article prose, and a JSON error body has no line structure for
+    // those anchors to bind to — "Human:" sits behind a quote, so the rule
+    // correctly declines to match and the text passed through intact.
+    //
+    // Filtering was the wrong instrument. An agent needs to know the call
+    // failed and what the status was; Ghost's internal error prose is for
+    // whoever operates this. So it goes to the log, where it is flattened and
+    // capped, and the agent gets the status alone.
+    logRequest('ghost_error', `status=${res.status} body=${(await res.text()).slice(0, 500)}`);
+    throw new Error(`Ghost API ${res.status}`);
   }
   return res.json();
 }
@@ -80,9 +114,16 @@ function clampInt(value, { min, max, fallback }) {
 }
 
 // Simple request logger — writes to stderr, captured by Fly.io logs.
+// One line per tool call, to stderr. These lines are the audit trail, so the
+// flattening matters as much as the content: a newline reaching here let a
+// caller close the record and write a convincing forged one after it.
+// Callers should still pass values they have already validated where they
+// can — this is the backstop, not the only guard.
 function logRequest(tool, detail = '') {
   const ts = new Date().toISOString();
-  console.error(`[${ts}] tool=${tool}${detail ? ' ' + detail : ''}`);
+  const line = `[${ts}] tool=${sanitiseLogValue(tool, 40)}`
+    + (detail ? ` ${sanitiseLogValue(detail, 300)}` : '');
+  console.error(line);
 }
 
 // ── MCP Server ─────────────────────────────────────────────────────────────
@@ -164,7 +205,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'list_articles': {
-        logRequest('list_articles', `page=${args?.page || 1} limit=${args?.limit || 20}${args?.tag ? ' tag=' + args.tag : ''}`);
         const params = {
           fields:  'title,slug,excerpt,url,published_at,reading_time',
           include: 'tags',
@@ -173,6 +213,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           order:   'published_at desc',
         };
         if (args?.tag) params.filter = `tag:${sanitiseQuery(args.tag)}`;
+        // Logged after the params are built, and from the params themselves.
+        // Logging the raw arguments made the record disagree with the request
+        // the moment clamping was added — limit=10000 was logged while Ghost
+        // received 100. An audit line describing a request that was never
+        // made is worse than no line.
+        logRequest('list_articles', `page=${params.page} limit=${params.limit}`
+          + (params.filter ? ` filter=${params.filter}` : ''));
         const data     = await ghostFetch('/posts/', params);
         const articles = data.posts.map(p => ({
           title:                p.title,

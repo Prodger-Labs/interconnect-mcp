@@ -8,7 +8,7 @@
 // No dependencies — node:test and node:assert ship with Node.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stripHtml, sanitiseQuery, isValidSlug, sanitiseContent } from '../lib/text.js';
+import { stripHtml, sanitiseQuery, isValidSlug, sanitiseContent, sanitiseLogValue } from '../lib/text.js';
 
 // ── sanitiseContent — the prompt injection defence ─────────────────────────
 
@@ -79,6 +79,55 @@ test('sanitiseContent does not touch role markers mid-sentence', () => {
   // Anchoring to line starts is what keeps ordinary prose safe from mangling.
   const s = 'The distinction Human: Assistant: is discussed below';
   assert.equal(sanitiseContent(s), s);
+});
+
+// ── sanitiseLogValue — keeping the audit trail forgeable-proof ─────────────
+
+// Written with fromCharCode rather than escapes on purpose: a literal U+2028
+// in source is a line terminator and breaks the file, which is how the first
+// version of lib/text.js failed to parse.
+const CH = {
+  LF: String.fromCharCode(10),
+  CR: String.fromCharCode(13),
+  NUL: String.fromCharCode(0),
+  ESC: String.fromCharCode(27),
+  DEL: String.fromCharCode(127),
+  LS: String.fromCharCode(8232),  // U+2028
+  PS: String.fromCharCode(8233),  // U+2029
+};
+
+// The reason this function exists. logRequest writes one line per call, and a
+// newline in an argument closed the real record and opened a forged one that
+// read exactly like a genuine audit entry.
+test('sanitiseLogValue prevents a forged log record', () => {
+  const forged = `mcp${CH.LF}[2026-01-01T00:00:00.000Z] tool=get_article slug=admin-secrets`;
+  const out = sanitiseLogValue(forged);
+  assert.ok(!out.includes(CH.LF), 'a newline survived and can still close the record');
+  assert.equal(out, 'mcp [2026-01-01T00:00:00.000Z] tool=get_article slug=admin-secrets');
+});
+
+test('sanitiseLogValue flattens every line terminator, not just LF', () => {
+  for (const [name, ch] of Object.entries({ LF: CH.LF, CR: CH.CR, LS: CH.LS, PS: CH.PS })) {
+    assert.equal(sanitiseLogValue(`a${ch}b`), 'a b', `${name} was not flattened`);
+  }
+  assert.equal(sanitiseLogValue(`a${CH.CR}${CH.LF}b`), 'a b', 'CRLF should collapse to one space');
+});
+
+test('sanitiseLogValue strips control characters that could rewrite a terminal', () => {
+  assert.equal(sanitiseLogValue(`a${CH.NUL}b${CH.ESC}c${CH.DEL}d`), 'abcd');
+});
+
+test('sanitiseLogValue caps a long value so it cannot bury nearby records', () => {
+  const out = sanitiseLogValue('x'.repeat(500));
+  assert.equal(out.length, 201, 'should be the 200 cap plus an ellipsis');
+  assert.ok(out.endsWith(String.fromCharCode(8230)), 'truncation should be visible');
+  assert.equal(sanitiseLogValue('short'), 'short', 'a short value is untouched');
+});
+
+test('sanitiseLogValue coerces non-strings rather than throwing', () => {
+  assert.equal(sanitiseLogValue(null), 'null');
+  assert.equal(sanitiseLogValue(42), '42');
+  assert.equal(sanitiseLogValue(undefined), 'undefined');
 });
 
 // ── sanitiseQuery — the NQL injection defence ──────────────────────────────
