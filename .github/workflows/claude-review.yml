@@ -2,7 +2,11 @@ name: Claude PR review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # ready_for_review matters because the auto-merge step below skips drafts.
+    # Without it, taking a PR out of draft fires nothing at all and the PR sits
+    # green and unmerged forever, since no other workflow here listens for that
+    # transition either.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_call:
     secrets:
       ANTHROPIC_API_KEY:
@@ -12,6 +16,17 @@ permissions:
   contents: write
   pull-requests: write
   checks: read         # required for the auto-merge step's checks.listForRef call
+
+# Two events in quick succession (a push plus a ready_for_review, say) each get
+# a run, and both can reach the merge step. Serialise per PR so they can't race.
+#
+# cancel-in-progress stays false deliberately. Cancelling would leave a check run
+# concluded as `cancelled` on the SHA, and auto-merge.yml's gate only accepts
+# success/neutral/skipped — so a cancelled run there would read as a failed check
+# and block the very merge it was trying to tidy up.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   review:
@@ -155,16 +170,22 @@ jobs:
         env:
           ELIGIBLE: ${{ steps.eligibility.outputs.eligible }}
           REASON: ${{ steps.eligibility.outputs.reason }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         with:
           script: |
             const fs = require('fs');
             const review = fs.readFileSync('/tmp/review.txt', 'utf8').trim();
             const eligible = process.env.ELIGIBLE === 'true';
             const reason = process.env.REASON || '';
+            const isDraft = process.env.DRAFT === 'true';
             const autoApprove = eligible && review.startsWith('AUTO-APPROVE:');
             core.setOutput('auto_approve', autoApprove ? 'true' : 'false');
+            // Don't promise a merge the auto-merge step won't perform: it skips
+            // drafts, so on a draft this says approved and nothing more.
             const header = autoApprove
-              ? '🤖 **Claude Haiku — approved (auto-merging when checks pass)**'
+              ? (isDraft
+                  ? '🤖 **Claude Haiku — approved.** Draft, so not merging; mark ready when you want it in.'
+                  : '🤖 **Claude Haiku — approved (auto-merging when checks pass)**')
               : eligible
                 ? '🤖 **Claude Haiku review** (Haiku flagged concerns — review before merging)'
                 : `🤖 **Claude Haiku review** (manual review recommended — ${reason})`;
@@ -175,8 +196,14 @@ jobs:
               body: header + '\n\n' + review,
             });
 
+      # Draft PRs are excluded here, not in the job's `if`, so the review itself
+      # still runs and posts while a PR is in progress. Only the merge is held
+      # back. Without this guard, pulls.merge returns 405 on a draft and the
+      # fallback's core.setFailed turns the whole check red — so every draft PR
+      # in the repo shows a failing "review" check. auto-merge.yml already skips
+      # drafts for the same reason.
       - name: Enable auto-merge
-        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true' && steps.eligibility.outputs.skip_oversize != 'true' && steps.post_review.outputs.auto_approve == 'true'
+        if: github.actor != 'dependabot[bot]' && steps.secret_check.outputs.skip != 'true' && steps.eligibility.outputs.skip_oversize != 'true' && steps.post_review.outputs.auto_approve == 'true' && !github.event.pull_request.draft
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # @v9
         with:
           script: |
@@ -192,6 +219,20 @@ jobs:
 
             const pr_number = context.issue.number;
             const pr_node_id = context.payload.pull_request.node_id;
+
+            // Serialised runs still both reach this step — the second just waits
+            // rather than being cancelled. If the first one merged, merging again
+            // returns 405 and the catch below would fail the check over a PR that
+            // is already in. Re-read state and bail out cleanly instead.
+            const { data: current } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr_number,
+            });
+            if (current.merged || current.state === 'closed') {
+              core.info(`PR #${pr_number} is already ${current.merged ? 'merged' : 'closed'}; nothing to do.`);
+              return;
+            }
 
             // Step 1: try enablePullRequestAutoMerge.
             // GitHub's GraphQL sometimes returns the mutation as "successful"
