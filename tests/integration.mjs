@@ -203,6 +203,18 @@ test('list_articles holds limit and page to the range its schema advertises', as
     [{ limit: 'abc' }, '20', '1'],
     [{ limit: 7.9 }, '7', '1'],
     [{}, '20', '1'],
+    // Number() turns each of these into 0, which is finite and would clamp to
+    // min. They mean "not supplied", so they must reach the default instead —
+    // {"limit": null} returning one article rather than twenty was a real bug.
+    [{ limit: null }, '20', '1'],
+    [{ limit: '' }, '20', '1'],
+    [{ limit: '   ' }, '20', '1'],
+    [{ limit: [] }, '20', '1'],
+    [{ limit: {} }, '20', '1'],
+    [{ limit: true }, '20', '1'],
+    [{ page: null }, '20', '1'],
+    // Distinct from the above: 0 was actually asked for, so it clamps to min.
+    [{ limit: '0' }, '1', '1'],
   ];
   await withServer(postsRoute([], {}), async (client, requests) => {
     for (const [args, limit, page] of cases) {

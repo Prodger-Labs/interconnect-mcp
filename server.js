@@ -67,6 +67,13 @@ async function ghostFetch(endpoint, params = {}) {
 // while limit=-5 was passed through as-is. A schema the server does not
 // enforce is a promise to the agent that it does not keep.
 function clampInt(value, { min, max, fallback }) {
+  // Anything that is not a number or a numeric string is "not supplied", not
+  // zero. Number(null), Number('') and Number([]) are all 0, which is finite,
+  // so they used to clamp to min — an agent sending {"limit": null} got one
+  // article back instead of the default twenty. Only genuine numbers and
+  // numeric strings get as far as the clamp.
+  if (typeof value !== 'number' && typeof value !== 'string') return fallback;
+  if (typeof value === 'string' && value.trim() === '') return fallback;
   const n = Math.trunc(Number(value));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
