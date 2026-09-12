@@ -48,12 +48,36 @@ jobs:
             --ignore E501,E402,E701,E741,F841 \
             --exclude ".venv,node_modules,__pycache__,.git"
 
+      # Pinned binary rather than apt, for the same reasons as gitleaks in
+      # secret-scan.yml: apt-get needs sudo, which a self-hosted runner may
+      # not grant, and it pulls whatever version the distro happens to carry,
+      # so the same source can lint clean on one runner and fail on another.
+      # Version and checksum pinned per architecture; an unrecognised machine
+      # fails loudly rather than silently skipping the lint.
       - name: Shell lint (shellcheck)
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256_X86_64: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          SHELLCHECK_SHA256_AARCH64: 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
         run: |
-          sudo apt-get install -y shellcheck -q
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)        arch=x86_64;  sha="${SHELLCHECK_SHA256_X86_64}" ;;
+            aarch64|arm64) arch=aarch64; sha="${SHELLCHECK_SHA256_AARCH64}" ;;
+            *) echo "::error::No pinned shellcheck build for $(uname -m)"; exit 1 ;;
+          esac
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz"
+          curl -sSfL -o "${tarball}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${tarball}"
+          echo "${sha}  ${tarball}" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xJf "${tarball}" --strip-components=1 \
+            -C "${RUNNER_TEMP}/bin" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          chmod 0755 "${RUNNER_TEMP}/bin/shellcheck"
+          "${RUNNER_TEMP}/bin/shellcheck" --version
           find . -name "*.sh" \
                -not -path "./.git/*" \
                -not -path "./.venv/*" \
                -not -path "*/node_modules/*" \
                -print0 \
-          | xargs -0 --no-run-if-empty shellcheck
+          | xargs -0 --no-run-if-empty "${RUNNER_TEMP}/bin/shellcheck"
