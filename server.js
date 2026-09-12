@@ -12,6 +12,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import { stripHtml, sanitiseQuery, isValidSlug, sanitiseContent } from './lib/text.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const envPath = join(__dirname, '.env');
@@ -53,58 +54,8 @@ async function ghostFetch(endpoint, params = {}) {
   return res.json();
 }
 
-// Converts HTML to readable plain text, preserving structure for agents.
-function stripHtml(html) {
-  return html
-    .replace(/<h[1-6][^>]*>/gi, '\n\n')
-    .replace(/<\/h[1-6]>/gi, '\n')
-    .replace(/<(p|div|blockquote|section|article)[^>]*>/gi, '\n\n')
-    .replace(/<\/(p|div|blockquote|section|article)>/gi, '')
-    .replace(/<li[^>]*>/gi, '\n• ')
-    .replace(/<\/li>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<code[^>]*>/gi, '`')
-    .replace(/<\/code>/gi, '`')
-    .replace(/<pre[^>]*>/gi, '\n\n')
-    .replace(/<\/pre>/gi, '\n\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&hellip;/g, '...')
-    .replace(/&mdash;/g, '\u2014')
-    .replace(/&ndash;/g, '\u2013')
-    .replace(/&lsquo;/g, '\u2018')
-    .replace(/&rsquo;/g, '\u2019')
-    .replace(/&ldquo;/g, '\u201C')
-    .replace(/&rdquo;/g, '\u201D')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-// Sanitise a search query for use in Ghost NQL filter expressions.
-function sanitiseQuery(query) {
-  return query.replace(/['"\\]/g, ' ').trim();
-}
-
-// Validate Ghost slug format — lowercase alphanumeric and hyphens only.
-function isValidSlug(slug) {
-  return typeof slug === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
-}
-
-// Strip common prompt injection patterns from content returned to agents.
-function sanitiseContent(text) {
-  return text
-    .replace(/<\|[^|]*\|>/g, '')                                    // LLM special tokens e.g. <|im_start|>
-    .replace(/\n+(Human|Assistant|User|System)\s*:/gi, '\n[...]')   // role injection
-    .replace(/\[INST\]|\[\/INST\]/g, '')                            // Llama instruction tokens
-    .replace(/###\s*(Human|Assistant|Instruction|Response)\b/gi, '###') // injection headers
-    .replace(/\n+ignore (previous|all|above|prior) instructions?\b/gi, '') // direct override attempts
-    .trim();
-}
+// stripHtml, sanitiseQuery, isValidSlug and sanitiseContent live in lib/text.js
+// so they can be unit tested without booting a server.
 
 // Simple request logger — writes to stderr, captured by Fly.io logs.
 function logRequest(tool, detail = '') {
