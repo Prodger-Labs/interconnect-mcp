@@ -261,7 +261,31 @@ if (PORT) {
   const app = express();
   const transports = new Map();
 
-  // Rate limiting — 100 requests per IP per 15 minutes
+  // Behind a reverse proxy every request arrives from the proxy's address, so
+  // with Express's default trust proxy of false the limiter sees one client
+  // and the "per IP" limit silently becomes global: 100 requests per 15
+  // minutes shared across everybody, where one busy agent locks out the rest.
+  // express-rate-limit emits ERR_ERL_UNEXPECTED_X_FORWARDED_FOR about exactly
+  // this. Verified before the fix: three requests carrying different
+  // X-Forwarded-For values counted down 99, 98, 97 off a single bucket.
+  //
+  // TRUST_PROXY is the number of proxy hops in front of this server — 1 for
+  // Fly.io and most PaaS. It defaults to 0 because trusting a hop that is not
+  // there is the worse failure: Express would then believe a client-supplied
+  // X-Forwarded-For, and anyone could evade the limiter outright by varying
+  // it. A global limit throttles honest traffic; a spoofable one stops
+  // nothing at all.
+  const TRUST_PROXY = clampInt(process.env.TRUST_PROXY, { min: 0, max: 10, fallback: 0 });
+  if (TRUST_PROXY > 0) {
+    app.set('trust proxy', TRUST_PROXY);
+    console.error(`trust proxy = ${TRUST_PROXY}; rate limiting keys on the client address.`);
+  } else {
+    console.error('TRUST_PROXY unset; rate limiting keys on the socket address. '
+      + 'If this is deployed behind a proxy, set TRUST_PROXY to the hop count or the limit is global.');
+  }
+
+  // Rate limiting — 100 requests per client per 15 minutes, where "client" is
+  // resolved according to TRUST_PROXY above.
   app.use(rateLimit({
     windowMs:        15 * 60 * 1000,
     max:             100,
