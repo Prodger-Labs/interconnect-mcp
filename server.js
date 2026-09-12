@@ -12,7 +12,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { stripHtml, sanitiseQuery, isValidSlug, sanitiseContent } from './lib/text.js';
+import { stripHtml, sanitiseQuery, isValidSlug, sanitiseContent, sanitiseLogValue } from './lib/text.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const envPath = join(__dirname, '.env');
@@ -44,24 +44,12 @@ if (!GHOST_KEY) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-async function ghostFetch(endpoint, params = {}) {
-  const url = new URL(`${API_BASE}${endpoint}`);
-  url.searchParams.set('key', GHOST_KEY);
-  for (const [k, v] of Object.entries(params)) {
-    url.searchParams.set(k, String(v));
-  }
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Ghost API ${res.status}: ${body}`);
-  }
-  return res.json();
-}
-
-// stripHtml, sanitiseQuery, isValidSlug and sanitiseContent live in lib/text.js
-// so they can be unit tested without booting a server.
-
-// Coerce an agent-supplied number into the documented range. The inputSchema
+// Declared above its first use rather than relying on hoisting. It works
+// either way as a function declaration, but would fail with a temporal dead
+// zone error the moment anyone rewrote it as a const arrow — a trap not worth
+// leaving in place for the sake of ordering.
+//
+// Coerces an agent-supplied number into the documented range. The inputSchema
 // advertises "max 100", and nothing was holding us to it: limit=10000 went
 // straight to Ghost and returned the whole corpus into the caller's context,
 // while limit=-5 was passed through as-is. A schema the server does not
@@ -79,10 +67,78 @@ function clampInt(value, { min, max, fallback }) {
   return Math.min(Math.max(n, min), max);
 }
 
-// Simple request logger — writes to stderr, captured by Fly.io logs.
+// These two are a pair and must stay one: the detail cap has to exceed the
+// body slice plus its "status=NNN body=" prefix, or the slice is dead and the
+// body is silently cut shorter than the number here claims.
+const GHOST_ERROR_BODY_MAX = 500;
+const LOG_DETAIL_MAX = 600;
+
+// A tool call waits on this, and an agent waits on the tool call. Without a
+// deadline a Ghost that accepts the connection and then never answers hangs
+// the caller indefinitely, with nothing to distinguish it from slow work.
+const GHOST_TIMEOUT_MS = clampInt(process.env.GHOST_TIMEOUT_MS, {
+  min: 1000, max: 120_000, fallback: 10_000,
+});
+
+// `tool` names the caller so a failure is traceable to it. Logging failures
+// under a bare ghost_error left the audit trail unable to say which tool the
+// call came from, recoverable only by assuming the adjacent record belongs to
+// it — which concurrent calls make untrue.
+async function ghostFetch(endpoint, params = {}, tool = 'unknown') {
+  const url = new URL(`${API_BASE}${endpoint}`);
+  url.searchParams.set('key', GHOST_KEY);
+  for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set(k, String(v));
+  }
+
+  let res;
+  try {
+    res = await fetch(url.toString(), { signal: AbortSignal.timeout(GHOST_TIMEOUT_MS) });
+  } catch (err) {
+    // AbortSignal.timeout rejects with a TimeoutError. Say so plainly rather
+    // than surfacing a bare "fetch failed", which reads like a bug in us.
+    if (err?.name === 'TimeoutError') {
+      throw new Error(`Ghost API did not respond within ${GHOST_TIMEOUT_MS}ms`);
+    }
+    throw new Error(`Ghost API unreachable: ${err?.name ?? 'Error'}`);
+  }
+
+  if (!res.ok) {
+    // The body does not reach the agent. It is attacker-influenceable, and it
+    // was an injection channel that sanitiseContent could not close: that
+    // function anchors its rules to start-of-string and newline because it
+    // guards article prose, and a JSON error body has no line structure for
+    // those anchors to bind to — "Human:" sits behind a quote, so the rule
+    // correctly declines to match and the text passed through intact.
+    //
+    // Filtering was the wrong instrument. An agent needs to know the call
+    // failed and what the status was; Ghost's internal error prose is for
+    // whoever operates this. So it goes to the log, where it is flattened and
+    // capped, and the agent gets the status alone.
+    // The slice bounds the regex work in sanitiseLogValue on a large body; the
+    // real limit is logRequest's detail cap, which is deliberately set above
+    // it so this 500 is not silently overridden. An earlier version sliced to
+    // 500 and then capped the whole detail at 300, so the 500 was dead and the
+    // body was quietly cut to 284.
+    logRequest(tool, `event=ghost_error status=${res.status} body=${(await res.text()).slice(0, GHOST_ERROR_BODY_MAX)}`);
+    throw new Error(`Ghost API ${res.status}`);
+  }
+  return res.json();
+}
+
+// stripHtml, sanitiseQuery, isValidSlug, sanitiseContent and sanitiseLogValue
+// live in lib/text.js so they can be unit tested without booting a server.
+
+// One line per tool call, to stderr. These lines are the audit trail, so the
+// flattening matters as much as the content: a newline reaching here let a
+// caller close the record and write a convincing forged one after it.
+// Callers should still pass values they have already validated where they
+// can — this is the backstop, not the only guard.
 function logRequest(tool, detail = '') {
   const ts = new Date().toISOString();
-  console.error(`[${ts}] tool=${tool}${detail ? ' ' + detail : ''}`);
+  const line = `[${ts}] tool=${sanitiseLogValue(tool, 60)}`
+    + (detail ? ` ${sanitiseLogValue(detail, LOG_DETAIL_MAX)}` : '');
+  console.error(line);
 }
 
 // ── MCP Server ─────────────────────────────────────────────────────────────
@@ -164,7 +220,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'list_articles': {
-        logRequest('list_articles', `page=${args?.page || 1} limit=${args?.limit || 20}${args?.tag ? ' tag=' + args.tag : ''}`);
         const params = {
           fields:  'title,slug,excerpt,url,published_at,reading_time',
           include: 'tags',
@@ -173,7 +228,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           order:   'published_at desc',
         };
         if (args?.tag) params.filter = `tag:${sanitiseQuery(args.tag)}`;
-        const data     = await ghostFetch('/posts/', params);
+        // Logged after the params are built, and from the params themselves.
+        // Logging the raw arguments made the record disagree with the request
+        // the moment clamping was added — limit=10000 was logged while Ghost
+        // received 100. An audit line describing a request that was never
+        // made is worse than no line.
+        logRequest('list_articles', `page=${params.page} limit=${params.limit}`
+          + (params.filter ? ` filter=${params.filter}` : ''));
+        const data     = await ghostFetch('/posts/', params, 'list_articles');
         const articles = data.posts.map(p => ({
           title:                p.title,
           slug:                 p.slug,
@@ -201,7 +263,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const data = await ghostFetch(`/posts/slug/${args.slug}/`, {
           fields:  'title,slug,html,excerpt,meta_description,url,published_at,reading_time',
           include: 'tags,authors',
-        });
+        }, 'get_article');
         const post = data.posts?.[0];
         if (!post) return { content: [{ type: 'text', text: `No article found with slug: ${args.slug}` }] };
         return {
@@ -229,7 +291,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           filter: `title:~'${query}',custom_excerpt:~'${query}'`,
           limit:  20,
           order:  'published_at desc',
-        });
+        }, 'search_articles');
         if (!data.posts?.length) return {
           content: [{ type: 'text', text: `No articles found matching "${raw}". Try list_articles to see everything published.` }],
         };

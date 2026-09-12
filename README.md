@@ -88,6 +88,7 @@ Set `PORT` so the server comes up in HTTP/SSE mode, and put your own auth in fro
 | `PORT` | unset | Set for HTTP/SSE mode. Unset for stdio. |
 | `TRUST_PROXY` | `0` | Number of proxy hops in front of the server. |
 | `GHOST_URL` | the publication | Ghost base URL. Override to point at another site. |
+| `GHOST_TIMEOUT_MS` | `10000` | How long to wait on Ghost before giving up (1s–120s). |
 
 `TRUST_PROXY` matters more than it looks. Behind a reverse proxy every request
 arrives from the proxy's address, so at the default of `0` the rate limiter
