@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node tests/smoke.mjs"
+    "test": "node --test tests/unit.mjs && node tests/smoke.mjs",
+    "test:unit": "node --test tests/unit.mjs",
+    "test:smoke": "node tests/smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

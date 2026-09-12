@@ -1,10 +1,14 @@
 // Smoke test. Boots the real server in HTTP mode and asks it for /health.
 //
-// There is no unit-testable logic worth pinning here: every tool is a thin
-// wrapper over the Ghost content API. What this catches is the server failing
-// to boot at all, which is what a dependency bump would cause. express is the
-// live example: it was never declared in package.json and resolved only as a
-// transitive of @modelcontextprotocol/sdk, and that SDK now ships hono too.
+// What this catches is the server failing to boot at all, which is what a
+// dependency bump would cause. express is the live example: it was never
+// declared in package.json and resolved only as a transitive of
+// @modelcontextprotocol/sdk, and that SDK now ships hono too.
+//
+// It catches nothing else. This file used to say there was no unit-testable
+// logic worth pinning, which stopped being true at #37 — server.js gained the
+// sanitisers, and /health never touches them. Replace sanitiseContent with
+// `return text` and this test still prints ok. tests/unit.mjs covers that.
 //
 // No network call reaches Ghost. The key below only has to be non-empty, since
 // the server exits 1 without one.
